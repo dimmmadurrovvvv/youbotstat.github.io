@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>График статистики бота</title>
+  <style>
+    * {
+      margin: 0; padding: 0; box-sizing: border-box;
+    }
+    body {
+      background-color: #131722;
+      color: #ECECEC;
+      font-family: Arial, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .container { display: flex; flex: 1; width: 100%; }
+    .left-panel {
+      width: 60px;
+      background-color: #1d1e22;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      border-right: 1px solid #2c2c2e;
+    }
+    .left-panel .logo {
+      margin: 20px 0;
+      width: 32px; height: 32px;
+      background-color: #DE1F52;
+      border-radius: 4px;
+    }
+    .left-panel .menu-item {
+      width: 32px; height: 32px;
+      margin: 10px 0;
+      background-color: #2c2c2e;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .main-content {
+      flex: 1; display: flex; flex-direction: column;
+    }
+    .top-bar {
+      height: 50px;
+      border-bottom: 1px solid #2c2c2e;
+      display: flex;
+      align-items: center;
+      padding: 0 15px;
+    }
+    .top-bar .market-pair {
+      font-size: 18px;
+      font-weight: bold;
+    }
+    .chart-container {
+      flex: 1;
+      position: relative;
+      background-color: #1d1e22;
+      overflow-x: auto; 
+      overflow-y: hidden;
+    }
+    .chart-layout {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    .y-axis {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 50px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: flex-end;
+      padding-right: 4px;
+      pointer-events: none;
+    }
+    .y-axis .label {
+      color: #888;
+      font-size: 12px;
+    }
+    #chart {
+      position: absolute;
+      top: 0; left: 50px; right: 0; bottom: 0;
+    }
+    .right-panel {
+      width: 300px;
+      background-color: #1d1e22;
+      border-left: 1px solid #2c2c2e;
+      display: flex; flex-direction: column;
+    }
+    .order-book {
+      flex: 1; padding: 10px;
+      border-bottom: 1px solid #2c2c2e;
+    }
+    .order-book h3 {
+      margin-bottom: 10px; font-size: 16px; color: #fff;
+    }
+    .orders { font-size: 14px; line-height: 1.5; }
+    .trade-panel { display: none; } /* Скрываем ненужное */
+
+    .buttons {
+      padding: 10px;
+      display: flex;
+    }
+    .buttons button {
+      background-color: #888; color: #fff;
+      border: none; padding: 10px;
+      font-size: 14px; font-weight: bold;
+      border-radius: 4px; cursor: pointer;
+      transition: background-color 0.3s;
+      width: 100%;
+    }
+    .buttons button:hover {
+      background-color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="left-panel">
+      <div class="logo"></div>
+      <div class="menu-item"></div>
+      <div class="menu-item"></div>
+      <div class="menu-item"></div>
+    </div>
+
+    <div class="main-content">
+      <div class="top-bar">
+        <div class="market-pair">Статистика бота (30-мин свечи)</div>
+        <div id="infoLabel" style="margin-left: auto;">---</div>
+      </div>
+      <div class="chart-container">
+        <div class="chart-layout">
+          <div class="y-axis" id="yAxis"></div>
+          <svg id="chart"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="right-panel">
+      <div class="order-book">
+        <h3>Книга активности</h3>
+        <div class="orders" id="activityList">
+          <!-- Сюда будем подставлять строки вида "+1 подписался" / "+1 использование" -->
+        </div>
+      </div>
+      <div class="buttons">
+        <button id="toggleBtn">Показать "Количество использований"</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // ========== ПЕРЕМЕННЫЕ И НАЧАЛО ==========
+  const svg = document.getElementById("chart");
+  const yAxis = document.getElementById("yAxis");
+  const chartLayout = document.querySelector(".chart-layout");
+  const chartContainer = document.querySelector(".chart-container");
+  const infoLabel = document.getElementById("infoLabel");
+  const activityList = document.getElementById("activityList");
+  const toggleBtn = document.getElementById("toggleBtn");
+
+  // Храним тут массив данных (свечей) от /stats:
+  // [
+  //   { timestamp: "2025-02-26T00:00:00", new_users: 2, usages: 5 },
+  //   ...
+  // ]
+  let candlesData = [];
+  // Какой набор показывать — "new_users" или "usages"?
+  let currentMetric = "new_users"; 
+  // Максимум по оси Y
+  let maxValue = 0;
+
+  // ========== ПОЛУЧАЕМ ДАННЫЕ С API И ИНИЦИАЛИЗИРУЕМ ГРАФИК ==========
+  async function fetchStats() {
+    try {
+      const response = await fetch("http://127.0.0.1:5000/stats"); 
+      // В бою будет url вашего сервера, например:
+      //  https://my-flask-app.onrender.com/stats
+      //  или netlify function endpoint...
+      candlesData = await response.json();
+
+      // Находим maxValue (для new_users по умолчанию)
+      updateMaxValue();
+
+      // Рисуем график
+      updateChart();
+
+      // Заодно обновим "Книга активности"
+      updateActivityList();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function updateMaxValue() {
+    // Если currentMetric == "new_users", смотрим максимальное new_users
+    // Если "usages", то смотрим максимальное usages
+    maxValue = 0;
+    candlesData.forEach(c => {
+      if (c[currentMetric] > maxValue) {
+        maxValue = c[currentMetric];
+      }
+    });
+  }
+
+  // ========== ФУНКЦИИ РИСОВАНИЯ ГРАФИКА ==========
+  function updateChart() {
+    // Очистим svg
+    while (svg.firstChild) {
+      svg.removeChild(svg.firstChild);
+    }
+    // Найдём ширину на основании кол-ва свечей (чтобы был скролл)
+    const candleWidth = 12;
+    const gap = 4;
+    const totalCandles = candlesData.length;
+    const totalWidth = totalCandles * (candleWidth + gap) - gap;
+    const viewWidth = Math.max(totalWidth + 100, chartContainer.clientWidth);
+
+    // Высота SVG
+    const layoutHeight = chartLayout.clientHeight;
+    const marginBottom = 30;
+    const marginTop = 20;
+    const chartHeight = layoutHeight - marginBottom - marginTop;
+    const xAxisY = layoutHeight - marginBottom;
+
+    svg.setAttribute("width", viewWidth);
+    svg.setAttribute("height", layoutHeight);
+
+    // Функция Y-координаты
+    function getY(val) {
+      if (maxValue === 0) return xAxisY;
+      return xAxisY - (val / maxValue) * chartHeight;
+    }
+
+    // Рисуем «ось X» (пунктир)
+    const xAxis = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    xAxis.setAttribute("x1", 0);
+    xAxis.setAttribute("y1", xAxisY);
+    xAxis.setAttribute("x2", viewWidth);
+    xAxis.setAttribute("y2", xAxisY);
+    xAxis.setAttribute("stroke", "#555");
+    xAxis.setAttribute("stroke-dasharray", "2,2");
+    svg.appendChild(xAxis);
+
+    // Рисуем прямоугольники (условно как «свечи», где open=0, close=кол-во)
+    candlesData.forEach((d, i) => {
+      const x = i * (candleWidth + gap);
+      const val = d[currentMetric];
+      const color = "#ff9900"; // любой единый цвет
+
+      const barY = getY(val);
+      const barHeight = xAxisY - barY;
+
+      // Прямоугольник
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", x);
+      rect.setAttribute("y", barY);
+      rect.setAttribute("width", candleWidth);
+      rect.setAttribute("height", barHeight);
+      rect.setAttribute("fill", color);
+
+      // Подсказка при наведении (title)
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      title.textContent = `${d.timestamp} => ${val}`;
+      rect.appendChild(title);
+
+      svg.appendChild(rect);
+    });
+
+    // Обновим ось Y
+    updateYAxis();
+    // Обновим метку вверху (например, отображаем, какой график смотрим)
+    infoLabel.textContent = currentMetric === "new_users" 
+      ? "График: новые подписки" 
+      : "График: использования";
+  }
+
+  function updateYAxis() {
+    while (yAxis.firstChild) {
+      yAxis.removeChild(yAxis.firstChild);
+    }
+    const steps = 5;
+    for (let i = 0; i <= steps; i++) {
+      const stepVal = Math.round((maxValue / steps) * i);
+      const div = document.createElement("div");
+      div.className = "label";
+      div.textContent = stepVal.toString();
+      yAxis.prepend(div); 
+      // prepend, чтобы 0 оказался внизу. Если хотите наоборот — append
+    }
+  }
+
+  // ========== "КНИГА АКТИВНОСТИ" ==========
+  // Покажем последние события: +1 подписался, +1 использование
+  // Чтобы не тянуть весь массив candles, лучше напрямую получить последние N сырых событий 
+  // Но мы упростим и возьмём их из того же /stats
+  // Для наглядности сделаем вид, что в конце массива candlesData есть суммарные данные за последнюю свечу.
+  // Либо сделаем отдельный вызов API "последние события" — на ваше усмотрение.
+
+  // Упростим и напишем фэйковые строки (или оставим, если вы захотите отдельный эндпоинт?)
+  function updateActivityList() {
+    // Допустим, просто возьмём последние 3-4 свечи и напишем +X подписались, +Y использований
+    activityList.innerHTML = "";
+    const lastCandles = candlesData.slice(-4);
+    lastCandles.forEach(c => {
+      if (c.new_users > 0) {
+        const line = document.createElement("div");
+        line.textContent = `+${c.new_users} подписались`;
+        activityList.appendChild(line);
+      }
+      if (c.usages > 0) {
+        const line = document.createElement("div");
+        line.textContent = `+${c.usages} использований`;
+        activityList.appendChild(line);
+      }
+    });
+  }
+
+  // ========== ПЕРЕКЛЮЧЕНИЕ КНОПКОЙ ==========
+  toggleBtn.addEventListener("click", () => {
+    if (currentMetric === "new_users") {
+      currentMetric = "usages";
+      toggleBtn.textContent = 'Показать "Новые подписки"';
+    } else {
+      currentMetric = "new_users";
+      toggleBtn.textContent = 'Показать "Количество использований"';
+    }
+    updateMaxValue();
+    updateChart();
+  });
+
+  // ========== ПЕРВЫЙ ЗАПУСК ==========
+  fetchStats();
+  </script>
+</body>
+</html>
