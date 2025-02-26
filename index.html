@@ -177,9 +177,7 @@
   async function fetchStats() {
     try {
       const response = await fetch("http://127.0.0.1:5000/stats"); 
-      // В бою будет url вашего сервера, например:
-      //  https://my-flask-app.onrender.com/stats
-      //  или netlify function endpoint...
+
       candlesData = await response.json();
 
       // Находим maxValue (для new_users по умолчанию)
